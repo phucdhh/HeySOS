@@ -62,7 +62,7 @@ Sources/Resources/Binaries/testdisk
 *.pkg
 *.ipa
 *.xcarchive/
-ExportOptions.plist
+# ExportOptions.plist is intentionally tracked (needed for CI/release builds)
 
 # =============================
 # IDE / Editor

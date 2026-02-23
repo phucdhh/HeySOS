@@ -1,10 +1,11 @@
 # 🛟 HeySOS — Free & Open-Source Data Recovery for MacOS
 
-![Platform](https://img.shields.io/badge/Platform-macOS%2013.0+-blue)
-![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon%20%7C%20Intel-lightgrey)
+![Platform](https://img.shields.io/badge/Platform-macOS%2014.0+-blue)
+![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon-lightgrey)
 ![License](https://img.shields.io/badge/License-GPLv3-green)
 ![Swift](https://img.shields.io/badge/Swift-5.9+-orange)
-![Status](https://img.shields.io/badge/Status-In%20Development-yellow)
+![Status](https://img.shields.io/badge/Status-Alpha-orange)
+![Tests](https://img.shields.io/badge/Tests-22%20passing-brightgreen)
 
 **HeySOS** is a modern, native macOS GUI application that makes data recovery accessible to everyone. Powered by the legendary open-source engines **TestDisk** and **PhotoRec**, HeySOS brings robust file and partition recovery to Apple Silicon and Intel Macs — without the hefty price tag.
 
@@ -19,6 +20,32 @@
 - **Partition Recovery (TestDisk Engine)** — Rebuild lost partition tables and repair damaged boot sectors.
 - **External Device Support** — Works with SD cards, USB flash drives, external HDDs, and SSDs.
 - **Privacy First** — 100% open-source. No telemetry, no hidden data uploads. Everything runs locally on your machine.
+
+---
+
+## ⬇️ Download
+
+> **Pre-release alpha** — Core engine integration complete (22 tests pass). UI is functional but visual testing is in progress.
+
+**[📦 Download HeySOS-v0.1.0-beta.dmg](https://github.com/phucdhh/HeySOS/releases/latest)**
+
+### Installation
+
+1. Download and open the `.dmg`, drag **HeySOS** to Applications.
+2. Install the recovery engines via Homebrew:
+   ```bash
+   brew install testdisk   # installs both testdisk and photorec
+   ```
+3. Copy the binaries into the app's bundle:
+   ```bash
+   cp /opt/homebrew/bin/photorec ~/Applications/HeySOS.app/Contents/Resources/Binaries/
+   cp /opt/homebrew/bin/testdisk ~/Applications/HeySOS.app/Contents/Resources/Binaries/
+   ```
+4. **Bypass Gatekeeper** (required for unsigned alpha builds):
+   ```bash
+   xattr -rd com.apple.quarantine /Applications/HeySOS.app
+   ```
+5. Grant **Full Disk Access**: System Settings → Privacy & Security → Full Disk Access → add HeySOS.
 
 ---
 
@@ -42,9 +69,9 @@ HeySOS acts as a Swift wrapper around compiled C/C++ binaries:
 
 To build HeySOS from source, you will need:
 
-- macOS 13.0 (Ventura) or later
-- Xcode 15.0 or later
-- Basic familiarity with compiling C/C++ projects (for building TestDisk/PhotoRec targeting `arm64`)
+- macOS 14.0 (Sonoma) or later
+- Xcode 16.0 or later
+- `brew install testdisk` — provides `photorec` and `testdisk` binaries
 
 ---
 
@@ -84,11 +111,15 @@ Then press **⌘R** to build and run.
 
 ## 🗺 Roadmap
 
-- [ ] Basic SwiftUI shell and navigation
-- [ ] PhotoRec integration (scan & recover files)
-- [ ] TestDisk integration (partition recovery)
-- [ ] Real-time progress parsing and log display
-- [ ] Drive/device selector UI
+- [x] Basic SwiftUI shell and navigation
+- [x] PhotoRec integration (scan & recover files)
+- [x] TestDisk integration (partition recovery — read-only analysis)
+- [x] Real-time progress parsing and log display
+- [x] Drive/device selector UI
+- [ ] IOKit hotplug detection (auto-refresh on USB/SD insert)
+- [ ] Visual testing on physical devices
+- [ ] TestDisk write / partition repair UI (v1.3)
+- [ ] Scan history (v1.2)
 - [ ] Localization (Vietnamese 🇻🇳, and more)
 - [ ] Notarized release build
 - [ ] Homebrew Cask distribution
