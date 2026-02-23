@@ -10,6 +10,8 @@ struct DeviceSelectorView: View {
     @State private var devices: [StorageDevice] = []
     @State private var selectedDevice: StorageDevice?
     @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var navigateToDevice: StorageDevice?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -23,10 +25,20 @@ struct DeviceSelectorView: View {
             } else {
                 deviceList
             }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .padding([.horizontal, .bottom])
+            }
         }
         .navigationTitle("Choose a Device")
         .toolbar { toolbarContent }
         .task { await loadDevices() }
+        .navigationDestination(item: $navigateToDevice) { device in
+            ScanView(device: device)
+        }
     }
 
     // MARK: - Subviews
@@ -61,7 +73,7 @@ struct DeviceSelectorView: View {
         }
         ToolbarItem(placement: .confirmationAction) {
             Button("Start Recovery") {
-                // TODO: Navigate to ScanView
+                navigateToDevice = selectedDevice
             }
             .disabled(selectedDevice == nil)
             .buttonStyle(.borderedProminent)
@@ -73,9 +85,15 @@ struct DeviceSelectorView: View {
     @MainActor
     private func loadDevices() async {
         isLoading = true
-        defer { isLoading = false }
-        // TODO: Call DiskUtilWrapper.listDevices() from background task
-        // self.devices = try await Task.detached { try DiskUtilWrapper.listDevices() }.value
+        errorMessage = nil
+        do {
+            devices = try await Task.detached(priority: .userInitiated) {
+                try DiskUtilWrapper.listDevices()
+            }.value
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoading = false
     }
 }
 

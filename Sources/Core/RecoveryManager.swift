@@ -127,6 +127,15 @@ final class RecoveryManager: ObservableObject {
         Task { await photoRecTask?.cancel() }
     }
 
+    /// Reset results so the user can start a new scan.
+    func resetRecovery() {
+        recoveredFiles = []
+        progressPercent = 0
+        filesFound = 0
+        currentSpeed = ""
+        lastError = nil
+    }
+
     // MARK: - Private
 
     private func resetSessionState() {

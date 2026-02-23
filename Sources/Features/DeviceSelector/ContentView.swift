@@ -51,7 +51,9 @@ struct ContentView: View {
     private var detailView: some View {
         switch selectedTab {
         case .recoverFiles:
-            DeviceSelectorView()
+            NavigationStack {
+                DeviceSelectorView()
+            }
         case .fixPartition:
             // TODO (v1.3): TestDisk UI
             ContentUnavailableView(

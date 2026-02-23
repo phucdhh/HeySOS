@@ -13,17 +13,23 @@ struct ScanView: View {
     @State private var outputDir: URL = FileManager.default
         .urls(for: .desktopDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("HeySOS_Recovered")
+    @State private var navigateToResults = false
 
     var body: some View {
         VStack(spacing: 20) {
             if recoveryManager.isRunning {
                 progressSection
+            } else if !recoveryManager.recoveredFiles.isEmpty {
+                completedSection
             } else {
                 configSection
             }
         }
         .padding(24)
         .navigationTitle("Scanning \(device.name)")
+        .navigationDestination(isPresented: $navigateToResults) {
+            ResultsView()
+        }
     }
 
     // MARK: - Config
@@ -43,7 +49,7 @@ struct ScanView: View {
 
             Button("Start Deep Scan") {
                 Task {
-                    await recoveryManager.startPhotoRecRecovery(
+                    await recoveryManager.startRecovery(
                         device: device,
                         outputDir: outputDir
                     )
@@ -52,6 +58,33 @@ struct ScanView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .frame(maxWidth: .infinity)
+        }
+    }
+
+    // MARK: - Completed
+
+    private var completedSection: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(.green)
+
+            Text("Recovery Complete")
+                .font(.title2.weight(.semibold))
+
+            Text("\(recoveryManager.recoveredFiles.count) files recovered")
+                .foregroundStyle(.secondary)
+
+            Button("View Recovered Files") {
+                navigateToResults = true
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+
+            Button("Scan Again") {
+                recoveryManager.resetRecovery()
+            }
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -70,7 +103,7 @@ struct ScanView: View {
             .font(.caption)
 
             Button("Cancel", role: .destructive) {
-                recoveryManager.cancel()
+                recoveryManager.cancelRecovery()
             }
         }
     }
