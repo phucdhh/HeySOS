@@ -24,11 +24,51 @@ struct ScanView: View {
             } else {
                 configSection
             }
+
+            if let error = recoveryManager.lastError {
+                errorBanner(error)
+            }
+
+            if !recoveryManager.consoleLog.isEmpty {
+                consoleSection
+            }
         }
         .padding(24)
         .navigationTitle("Scanning \(device.name)")
         .navigationDestination(isPresented: $navigateToResults) {
             ResultsView()
+        }
+    }
+
+    // MARK: - Error Banner
+
+    @ViewBuilder
+    private func errorBanner(_ error: RecoveryError) -> some View {
+        GroupBox {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                    .font(.title3)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(error.errorDescription ?? "Unknown error")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if case .insufficientPermissions = error {
+                        Button("Open Privacy & Security Settings…") {
+                            NSWorkspace.shared.open(
+                                URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
+                            )
+                        }
+                        .buttonStyle(.link)
+                        .font(.callout)
+                    }
+                }
+
+                Spacer()
+            }
+            .padding(4)
         }
     }
 
@@ -55,6 +95,7 @@ struct ScanView: View {
                     )
                 }
             }
+
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .frame(maxWidth: .infinity)
@@ -104,6 +145,51 @@ struct ScanView: View {
 
             Button("Cancel", role: .destructive) {
                 recoveryManager.cancelRecovery()
+            }
+        }
+    }
+
+    // MARK: - Console Log
+
+    private var consoleSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Header row — rendered outside GroupBox label to avoid macOS
+            // hit-testing issues that silently drop button clicks.
+            HStack {
+                Label("Console Output", systemImage: "terminal")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(recoveryManager.consoleLog, forType: .string)
+                } label: {
+                    Label("Copy All", systemImage: "doc.on.doc")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+            }
+
+            GroupBox {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(recoveryManager.consoleLog)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                            .id("logContent")
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 160, maxHeight: 260)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .onChange(of: recoveryManager.consoleLog) { _, _ in
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo("logContent", anchor: .bottom)
+                        }
+                    }
+                }
             }
         }
     }

@@ -64,7 +64,8 @@ cd "$ARM64_PREFIX/src"
     LDFLAGS="-arch arm64" \
     --prefix="$ARM64_PREFIX/install" \
     --disable-silent-rules \
-    --without-ntfs3g
+    --without-ntfs3g \
+    --without-ncurses
 
 make -j"$(sysctl -n hw.ncpu)"
 make install
@@ -87,6 +88,7 @@ cd "$X86_64_PREFIX/src"
     --prefix="$X86_64_PREFIX/install" \
     --disable-silent-rules \
     --without-ntfs3g \
+    --without-ncurses \
     --host=x86_64-apple-darwin
 
 make -j"$(sysctl -n hw.ncpu)"

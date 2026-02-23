@@ -4,63 +4,83 @@
 
 import Foundation
 
-/// Wraps the PhotoRec binary as an async subprocess using `--cmd` batch mode.
+/// Wraps the PhotoRec binary, running it with administrator privileges via
+/// `osascript do shell script … with administrator privileges`.
 ///
-/// ## Why --cmd mode?
-/// PhotoRec is an ncurses TUI — driving it via stdin is impossible.
-/// The `--cmd` flag runs a fully non-interactive session:
+/// ## Why administrator privileges?
+/// Reading raw block devices (e.g. /dev/disk9) on macOS requires root.
+/// Full Disk Access (TCC) is file-level only; raw device access is kernel-level.
 ///
-///   photorec /d /output/dir /cmd "/dev/disk2,fileopt,everything,enable,search"
+/// ## Architecture
+/// 1. An Expect script is written to a temp .exp file.  It spawns photorec and
+///    navigates its ncurses TUI automatically (Proceed → Search → Other → Confirm).
+/// 2. The Expect script uses `log_file` to copy all photorec output to a temp log.
+/// 3. A DispatchSourceTimer polls the temp log every 200 ms, streaming new bytes
+///    to the caller via AsyncStream<RecoveryEvent>.
+/// 4. The actual photorec exit code is captured via a sentinel line
+///    `__HEYSOS_EXIT__:N` written by the Expect script after photorec exits.
+/// 5. On cancel, photorec is terminated via a privileged pkill.
 ///
-/// Reference: https://www.cgsecurity.org/wiki/PhotoRec_Command_Line
+/// ## Why Expect?
+/// PhotoRec's batch `/cmd` mode is compiled only for Windows (`#ifdef __MINGW32__`).
+/// On macOS/Unix, photorec has no non-interactive mode — the ncurses TUI must be
+/// driven by a pseudo-TTY.  `/usr/bin/expect` is pre-installed on macOS and provides
+/// exactly that.
 actor PhotoRecTask {
 
     // MARK: - State
 
-    private var process: Process?
+    private var osascriptProc: Process?
     private var continuation: AsyncStream<RecoveryEvent>.Continuation?
+    private var pollingSource: DispatchSourceTimer?
+    private var logHandle: FileHandle?
+    private var logPath: String?
+    private var expPath: String?  // temp Expect script
 
     // Actor-isolated parse state — avoids Swift 6 data race on captured vars
     private var parseResult = PhotoRecLogParser.ParseResult()
     private var lastProgressYield = Date.distantPast
+    private var permissionDenied = false
 
     // MARK: - Constants
 
-    /// Interval (seconds) between progress yield events.
     private let progressThrottleInterval: TimeInterval = 0.5
+    private let exitSentinel = "__HEYSOS_EXIT__"
 
     // MARK: - Public API
 
-    /// Launch PhotoRec in non-interactive `--cmd` mode.
+    /// Launch PhotoRec with administrator privileges.
+    ///
+    /// macOS will display a native password dialog before photorec runs.
     ///
     /// - Parameters:
-    ///   - device: The device to scan (must pass read-only; PhotoRec never writes to source).
+    ///   - device: The device to scan (read-only).
     ///   - outputDir: Directory where recovered files will be written.
-    ///   - fileTypes: Comma-separated PhotoRec file type list, e.g. `"everything,enable"`.
-    ///                Defaults to recovering everything.
-    /// - Returns: An `AsyncStream<RecoveryEvent>` that yields progress and completion events.
+    /// - Returns: An `AsyncStream<RecoveryEvent>` yielding progress and completion events.
     func start(
         device: StorageDevice,
-        outputDir: URL,
-        fileTypes: String = "everything,enable"
+        outputDir: URL
     ) -> AsyncStream<RecoveryEvent> {
         AsyncStream { [weak self] continuation in
             guard let self else { return }
-
             Task {
-                await self.launch(
-                    device: device,
-                    outputDir: outputDir,
-                    fileTypes: fileTypes,
-                    continuation: continuation
-                )
+                await self.launch(device: device, outputDir: outputDir, continuation: continuation)
             }
         }
     }
 
-    /// Send SIGTERM to the running process and emit a `.cancelled` event.
+    /// Cancel the running recovery.
+    /// Sends SIGTERM to photorec via a privileged pkill, then cleans up.
     func cancel() {
-        process?.terminate()
+        let kill = Process()
+        kill.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        kill.arguments = ["-e", "do shell script \"pkill -x photorec\" with administrator privileges"]
+        kill.standardOutput = FileHandle.nullDevice
+        kill.standardError  = FileHandle.nullDevice
+        try? kill.run()
+
+        osascriptProc?.terminate()
+        tearDown()
         continuation?.yield(.cancelled)
         continuation?.finish()
         continuation = nil
@@ -71,86 +91,165 @@ actor PhotoRecTask {
     private func launch(
         device: StorageDevice,
         outputDir: URL,
-        fileTypes: String,
         continuation: AsyncStream<RecoveryEvent>.Continuation
     ) {
         self.continuation = continuation
 
-        // Resolve binary path from bundle, then fall back to Homebrew location
-        let binaryURL = resolveBinaryURL(name: "photorec")
-
-        guard let binaryURL else {
+        guard let binaryURL = resolveBinaryURL(name: "photorec") else {
             continuation.yield(.failed(error: .binaryNotFound("photorec")))
             continuation.finish()
             return
         }
 
-        // Ensure output directory exists
         do {
-            try FileManager.default.createDirectory(
-                at: outputDir,
-                withIntermediateDirectories: true
-            )
+            try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         } catch {
             continuation.yield(.failed(error: .outputDirectoryNotWritable(outputDir)))
             continuation.finish()
             return
         }
 
-        let proc = Process()
-        proc.executableURL = binaryURL
+        // ── Temp log file ────────────────────────────────────────────────────
+        let uid   = UUID().uuidString
+        let lp    = NSTemporaryDirectory() + "heysos_\(uid).log"
+        let ep    = NSTemporaryDirectory() + "heysos_\(uid).exp"
+        FileManager.default.createFile(atPath: lp, contents: nil)
+        guard let lh = FileHandle(forReadingAtPath: lp) else {
+            continuation.yield(.failed(error: .outputDirectoryNotWritable(outputDir)))
+            continuation.finish()
+            return
+        }
+        self.logPath = lp
+        self.logHandle = lh
+        self.expPath = ep
 
-        // /d sets the output directory prefix; /cmd gives the non-interactive command string
-        proc.arguments = [
-            "/d", outputDir.path,
-            "/cmd", "\(device.id),\(fileTypes),search"
-        ]
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        proc.standardOutput = stdoutPipe
-        proc.standardError  = stderrPipe
-
-        // Route stdout through the actor to avoid Swift 6 data races.
-        // readabilityHandler runs on a background thread; we hop to the actor via Task.
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            Task { await self?.processOutput(text, continuation: continuation) }
+        // ── Write Expect script ───────────────────────────────────────────────
+        let expectScript = makeExpectScript(
+            binary:  binaryURL.path,
+            outDir:  outputDir.path,
+            device:  device.id,
+            logPath: lp,
+            sentinel: exitSentinel
+        )
+        guard (try? expectScript.write(toFile: ep, atomically: true, encoding: .utf8)) != nil,
+              FileManager.default.fileExists(atPath: ep) else {
+            continuation.yield(.failed(error: .outputDirectoryNotWritable(outputDir)))
+            continuation.finish()
+            return
         }
 
-        proc.terminationHandler = { [weak self] p in
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        // ── Build shell command ───────────────────────────────────────────────
+        // Escape a string for embedding inside an AppleScript double-quoted string.
+        let esc = { (s: String) -> String in
+            s.replacingOccurrences(of: "\\", with: "\\\\")
+             .replacingOccurrences(of: "\"", with: "\\\"")
+        }
+        // Run: /usr/bin/expect /tmp/heysos_UUID.exp
+        // The Expect script handles all TUI navigation and writes the log file itself.
+        let shellCmd = "/usr/bin/expect \"\(esc(ep))\""
+        let appleScript = "do shell script \"\(esc(shellCmd))\" with administrator privileges"
+
+        // ── Emit display command (show the underlying photorec call) ──────────
+        continuation.yield(.log("$ \(binaryURL.path) /d \(outputDir.path) \(device.id)\n"))
+
+        // ── Start polling timer ───────────────────────────────────────────────
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
+        timer.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
+        timer.setEventHandler { [weak self] in
+            Task { await self?.pollLogFile(continuation: continuation) }
+        }
+        timer.resume()
+        self.pollingSource = timer
+
+        // ── Launch osascript ─────────────────────────────────────────────────
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments     = ["-e", appleScript]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError  = FileHandle.nullDevice
+        self.osascriptProc = proc
+
+        proc.terminationHandler = { [weak self] _ in
             Task {
-                await self?.handleTermination(
-                    p.terminationStatus,
-                    outputDir: outputDir,
-                    continuation: continuation
-                )
+                // Allow the polling timer one final pass to flush remaining bytes.
+                try? await Task.sleep(for: .milliseconds(400))
+                await self?.finalizeScan(outputDir: outputDir, continuation: continuation)
             }
         }
 
         do {
             try proc.run()
-            self.process = proc
         } catch {
+            tearDown()
             continuation.yield(.failed(error: .binaryNotFound("photorec")))
             continuation.finish()
         }
     }
 
-    // MARK: - Private — helpers
+    // MARK: - Private — log polling
 
-    /// Called on the actor — safely mutates actor-isolated parse state.
+    private func pollLogFile(continuation: AsyncStream<RecoveryEvent>.Continuation) {
+        guard let lh = logHandle else { return }
+        let data = lh.readDataToEndOfFile()
+        guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+        processOutput(text, continuation: continuation)
+    }
+
+    /// Final flush after osascript exits: read remaining bytes, parse exit sentinel.
+    private func finalizeScan(
+        outputDir: URL,
+        continuation: AsyncStream<RecoveryEvent>.Continuation
+    ) {
+        if let lh = logHandle {
+            let data = lh.readDataToEndOfFile()
+            if !data.isEmpty, let text = String(data: data, encoding: .utf8) {
+                processOutput(text, continuation: continuation)
+            }
+        }
+
+        // Recover the real photorec exit code from the sentinel line.
+        let exitCode: Int32
+        if let lp = logPath,
+           let fullText = try? String(contentsOfFile: lp, encoding: .utf8),
+           let sentinelLine = fullText.components(separatedBy: .newlines)
+               .last(where: { $0.hasPrefix(exitSentinel + ":") }),
+           let code = Int32(sentinelLine.dropFirst((exitSentinel + ":").count)) {
+            exitCode = code
+        } else {
+            // No sentinel → osascript itself failed (user dismissed auth dialog, etc.)
+            exitCode = -1
+        }
+
+        tearDown()
+        handleTermination(exitCode, outputDir: outputDir, continuation: continuation)
+    }
+
+    // MARK: - Private — output processing
+
     private func processOutput(
         _ text: String,
         continuation: AsyncStream<RecoveryEvent>.Continuation
     ) {
+        // Strip sentinel lines from visible console output.
+        let visible = text.components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix(exitSentinel) }
+            .joined(separator: "\n")
+
+        if !visible.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            continuation.yield(.log(visible.hasSuffix("\n") ? visible : visible + "\n"))
+        }
+
+        // Detect permission errors from any output line.
+        if text.localizedCaseInsensitiveContains("Permission denied") ||
+           text.localizedCaseInsensitiveContains("Operation not permitted") ||
+           text.localizedCaseInsensitiveContains("Unable to open") {
+            permissionDenied = true
+        }
+
         for line in text.components(separatedBy: .newlines) {
             PhotoRecLogParser.parseLine(line, into: &parseResult)
         }
 
-        // Throttle progress events
         let now = Date()
         guard now.timeIntervalSince(lastProgressYield) >= progressThrottleInterval else { return }
         lastProgressYield = now
@@ -170,7 +269,14 @@ actor PhotoRecTask {
         outputDir: URL,
         continuation: AsyncStream<RecoveryEvent>.Continuation
     ) {
-        if exitCode == 0 || parseResult.isCompleted {
+        continuation.yield(.log("\n[photorec exited with code \(exitCode)]\n"))
+
+        if exitCode == -1 {
+            // User dismissed the macOS administrator password dialog.
+            continuation.yield(.cancelled)
+        } else if permissionDenied {
+            continuation.yield(.failed(error: .insufficientPermissions))
+        } else if exitCode == 0 || parseResult.isCompleted {
             let total = parseResult.recoveredTypes.values.reduce(0, +)
             continuation.yield(.completed(totalFiles: total, outputDir: outputDir))
         } else if exitCode == 15 {
@@ -182,22 +288,117 @@ actor PhotoRecTask {
         self.continuation = nil
     }
 
-    /// Resolve the photorec/testdisk binary: bundle first, Homebrew fallback.
+    // MARK: - Private — cleanup
+
+    private func tearDown() {
+        pollingSource?.cancel()
+        pollingSource = nil
+        logHandle?.closeFile()
+        logHandle = nil
+        if let lp = logPath {
+            try? FileManager.default.removeItem(atPath: lp)
+            logPath = nil
+        }
+        if let ep = expPath {
+            try? FileManager.default.removeItem(atPath: ep)
+            expPath = nil
+        }
+    }
+
+    // MARK: - Private — Expect script generation
+
+    /// Returns an Expect script that spawns photorec and navigates its ncurses TUI
+    /// automatically.  All photorec output is captured to `logPath` via
+    /// Expect's `log_file`.  The exit sentinel `__HEYSOS_EXIT__:N` is appended
+    /// to `logPath` after photorec exits so PhotoRecTask can recover the real exit code.
+    ///
+    /// ## TUI navigation sequence (photorec 7.2, USB drive)
+    /// 1. Disk selection screen  — "Proceed" at bottom → Enter
+    /// 2. Partition table type   — "Proceed" again (Intel selected) → Enter
+    /// 3. Partition selection    — "Search" at bottom → Enter (first / only partition)
+    /// 4. Filesystem type        — "ext2/ext3" default → Down arrow selects "Other" → Enter
+    /// 5. Output dir browser     — "recup_dir" in path → 'c' to confirm here
+    /// 6. Recovery runs          — "files recovered" or eof marks completion
+    private func makeExpectScript(
+        binary: String,
+        outDir: String,
+        device: String,
+        logPath: String,
+        sentinel: String
+    ) -> String {
+        // Escape backslashes and double-quotes for embedding in a Tcl string literal.
+        let q = { (s: String) -> String in
+            s.replacingOccurrences(of: "\\", with: "\\\\")
+             .replacingOccurrences(of: "\"", with: "\\\"")
+        }
+        return """
+        #!/usr/bin/expect -f
+        # Auto-generated by HeySOS — do not edit
+
+        set timeout 7200
+        log_user 0
+        log_file -a "\(q(logPath))"
+
+        spawn "\(q(binary))" /d "\(q(outDir))" "\(q(device))"
+
+        # Navigate all screens with exp_continue so we loop until eof/timeout.
+        # Patterns are matched against raw terminal output (including ANSI codes);
+        # the key text strings below are always present regardless of decoration.
+        expect {
+            "Proceed" {
+                # Disk selection or partition-table-type screen: confirm selection
+                send "\\r"
+                exp_continue
+            }
+            "Search" {
+                # Partition selection screen: start recovery on selected partition
+                send "\\r"
+                exp_continue
+            }
+            "ext2/ext3" {
+                # Filesystem type: default is ext2/ext3; move Down to select "Other"
+                # then confirm — "Other" is better for unknown/FAT/NTFS USB drives
+                send "\\033\\[B"
+                after 300
+                send "\\r"
+                exp_continue
+            }
+            "recup_dir" {
+                # Output dir browser: current dir is recup_dir; press C to confirm
+                send "c"
+                exp_continue
+            }
+            "files recovered" {
+                # Scan finished — fall through to eof wait
+            }
+            eof { }
+            timeout {
+                puts "\\n\\[HeySOS: photorec timed out after 2 hours\\]\\n"
+            }
+        }
+
+        # Capture photorec's real exit code and write the sentinel to the log.
+        catch {wait} result
+        set ecode [lindex $result 3]
+        after 500
+        set fh [open "\(q(logPath))" a]
+        puts $fh "\\n\(sentinel):${ecode}"
+        close $fh
+        """
+    }
+
+    /// Resolve binary for photorec:
+    /// The app bundle is preferred — it's compiled WITHOUT ncurses so it runs
+    /// in fully automatic batch mode. Homebrew is used as a fallback only.
     private func resolveBinaryURL(name: String) -> URL? {
-        // 1. App bundle — individual file resource (lands in Contents/Resources/)
+        // 1. App bundle — compiled without ncurses (batch mode, no TUI)
         if let url = Bundle.main.url(forResource: name, withExtension: nil) {
-            // Ensure executable bit is set (Xcode may strip it on copy)
             try? FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: url.path)
             return url
         }
-
-        // 2. Development fallback: Homebrew
-        let homebrewPaths = [
-            "/opt/homebrew/bin/\(name)",   // Apple Silicon
-            "/usr/local/bin/\(name)"        // Intel
-        ]
-        for path in homebrewPaths {
+        // 2. Homebrew fallback (Apple Silicon then Intel)
+        for path in ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)"] {
             if FileManager.default.isExecutableFile(atPath: path) {
                 return URL(fileURLWithPath: path)
             }
@@ -205,11 +406,9 @@ actor PhotoRecTask {
         return nil
     }
 
-    /// Format scan speed: MB/s based on sectors scanned and elapsed time.
     private static func formatSpeed(sectors: Int64, seconds: Int) -> String {
         guard seconds > 0, sectors > 0 else { return "—" }
-        let bytes = Double(sectors) * 512.0
-        let mbPerSec = (bytes / Double(seconds)) / 1_048_576.0
+        let mbPerSec = (Double(sectors) * 512.0 / Double(seconds)) / 1_048_576.0
         return String(format: "%.1f MB/s", mbPerSec)
     }
 }

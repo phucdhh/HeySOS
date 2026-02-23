@@ -11,6 +11,8 @@ enum RecoveryEvent {
     case completed(totalFiles: Int, outputDir: URL)
     case failed(error: RecoveryError)
     case cancelled
+    /// Raw console output line(s) from the recovery engine.
+    case log(String)
 }
 
 /// Errors that can occur during recovery.
@@ -59,10 +61,21 @@ final class RecoveryManager: ObservableObject {
     @Published private(set) var estimatedSecondsRemaining: Int = 0
     @Published private(set) var lastError: RecoveryError?
     @Published private(set) var activeOutputDir: URL?
+    /// Accumulated raw console output from the recovery engine.
+    @Published private(set) var consoleLog: String = ""
 
     // MARK: - Private
 
     private var photoRecTask: PhotoRecTask?
+
+    // Log batching — avoids re-rendering SwiftUI Text on every 200 ms poll tick.
+    // Incoming log chunks are buffered and flushed to `consoleLog` at most once
+    // per `logFlushInterval`, keeping the main thread free during heavy scans.
+    private var pendingLog: String = ""
+    private var logFlushScheduled = false
+    private let logFlushInterval: Duration = .milliseconds(800)
+    /// Maximum number of lines kept in `consoleLog` to bound layout cost.
+    private let maxLogLines = 500
 
     // MARK: - Device Discovery
 
@@ -90,11 +103,9 @@ final class RecoveryManager: ObservableObject {
     /// - Parameters:
     ///   - device: Storage device to scan (read-only).
     ///   - outputDir: Directory where PhotoRec will write recovered files.
-    ///   - fileTypes: PhotoRec file type selector string (default: recover everything).
     func startRecovery(
         device: StorageDevice,
-        outputDir: URL,
-        fileTypes: String = "everything,enable"
+        outputDir: URL
     ) async {
         guard !isRunning else { return }
 
@@ -105,7 +116,7 @@ final class RecoveryManager: ObservableObject {
         let task = PhotoRecTask()
         self.photoRecTask = task
 
-        let stream = await task.start(device: device, outputDir: outputDir, fileTypes: fileTypes)
+        let stream = await task.start(device: device, outputDir: outputDir)
 
         for await event in stream {
             handle(event: event)
@@ -115,6 +126,9 @@ final class RecoveryManager: ObservableObject {
         }
 
         isRunning = false
+
+        // Flush any remaining buffered log text immediately.
+        flushPendingLog()
 
         // After completion: enumerate recovered files from outputDir
         if lastError == nil {
@@ -134,6 +148,7 @@ final class RecoveryManager: ObservableObject {
         filesFound = 0
         currentSpeed = ""
         lastError = nil
+        consoleLog = ""
     }
 
     // MARK: - Private
@@ -146,6 +161,9 @@ final class RecoveryManager: ObservableObject {
         estimatedSecondsRemaining = 0
         lastError = nil
         activeOutputDir = nil
+        consoleLog = ""
+        pendingLog = ""
+        logFlushScheduled = false
     }
 
     private func handle(event: RecoveryEvent) {
@@ -168,6 +186,34 @@ final class RecoveryManager: ObservableObject {
 
         case .cancelled:
             break
+
+        case .log(let text):
+            pendingLog += text
+            scheduleLogFlush()
+        }
+    }
+
+    /// Coalesces buffered log text into a single `consoleLog` publish,
+    /// capped at `maxLogLines` lines to prevent SwiftUI layout hangs.
+    private func scheduleLogFlush() {
+        guard !logFlushScheduled else { return }
+        logFlushScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: logFlushInterval)
+            self.flushPendingLog()
+        }
+    }
+
+    private func flushPendingLog() {
+        defer { logFlushScheduled = false }
+        guard !pendingLog.isEmpty else { return }
+        consoleLog += pendingLog
+        pendingLog = ""
+        // Cap to the most recent maxLogLines lines to bound Text layout cost.
+        let lines = consoleLog.components(separatedBy: "\n")
+        if lines.count > maxLogLines {
+            consoleLog = lines.suffix(maxLogLines).joined(separator: "\n")
         }
     }
 

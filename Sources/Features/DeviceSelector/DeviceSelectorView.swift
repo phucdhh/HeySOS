@@ -58,8 +58,19 @@ struct DeviceSelectorView: View {
     }
 
     private var deviceList: some View {
-        List(devices, selection: $selectedDevice) { device in
-            DeviceRow(device: device)
+        List {
+            ForEach(devices) { device in
+                DeviceRow(device: device)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedDevice = device
+                    }
+                    .listRowBackground(
+                        selectedDevice == device
+                            ? Color.accentColor.opacity(0.15)
+                            : Color.clear
+                    )
+            }
         }
         .listStyle(.inset)
     }
