@@ -32,20 +32,13 @@
 ### Installation
 
 1. Download and open the `.dmg`, drag **HeySOS** to Applications.
-2. Install the recovery engines via Homebrew:
-   ```bash
-   brew install testdisk   # installs both testdisk and photorec
-   ```
-3. Copy the binaries into the app's bundle:
-   ```bash
-   cp /opt/homebrew/bin/photorec ~/Applications/HeySOS.app/Contents/Resources/Binaries/
-   cp /opt/homebrew/bin/testdisk ~/Applications/HeySOS.app/Contents/Resources/Binaries/
-   ```
-4. **Bypass Gatekeeper** (required for unsigned alpha builds):
+2. **Bypass Gatekeeper** (required for unsigned alpha builds):
    ```bash
    xattr -rd com.apple.quarantine /Applications/HeySOS.app
    ```
-5. Grant **Full Disk Access**: System Settings → Privacy & Security → Full Disk Access → add HeySOS.
+3. Grant **Full Disk Access**: System Settings → Privacy & Security → Full Disk Access → add HeySOS.
+
+> **PhotoRec and TestDisk are bundled inside the app** — no Homebrew or separate install required.
 
 ---
 
@@ -71,7 +64,6 @@ To build HeySOS from source, you will need:
 
 - macOS 14.0 (Sonoma) or later
 - Xcode 16.0 or later
-- `brew install testdisk` — provides `photorec` and `testdisk` binaries
 
 ---
 
@@ -84,25 +76,15 @@ git clone https://github.com/phucdhh/HeySOS.git
 cd HeySOS
 ```
 
-**2. Compile the core engines:**
-
-> Detailed instructions for compiling TestDisk/PhotoRec for macOS (both `arm64` and `x86_64`) will be added to the [Wiki](../../wiki).
-
-**3. Place the compiled binaries:**
-
-Copy the compiled `photorec` and `testdisk` binaries into:
-
-```
-Sources/Resources/Binaries/
-```
-
-**4. Open and run in Xcode:**
+**2. Open and run in Xcode:**
 
 ```bash
 open HeySOS.xcodeproj
 ```
 
 Then press **⌘R** to build and run.
+
+> The `photorec` and `testdisk` binaries are already included in `Sources/Resources/Binaries/` and bundled automatically by the build system.
 
 > **⚠️ Important:** HeySOS requires **Full Disk Access** to interact with physical drives (`/dev/disk*`).
 > Grant access at: **System Settings → Privacy & Security → Full Disk Access**

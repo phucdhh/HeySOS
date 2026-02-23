@@ -184,17 +184,18 @@ actor PhotoRecTask {
 
     /// Resolve the photorec/testdisk binary: bundle first, Homebrew fallback.
     private func resolveBinaryURL(name: String) -> URL? {
-        // 1. App bundle (production)
-        if let url = Bundle.main.url(
-            forResource: name,
-            withExtension: nil,
-            subdirectory: "Binaries"
-        ) { return url }
+        // 1. App bundle — individual file resource (lands in Contents/Resources/)
+        if let url = Bundle.main.url(forResource: name, withExtension: nil) {
+            // Ensure executable bit is set (Xcode may strip it on copy)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: url.path)
+            return url
+        }
 
         // 2. Development fallback: Homebrew
         let homebrewPaths = [
             "/opt/homebrew/bin/\(name)",   // Apple Silicon
-            "/usr/local/bin/\(name)"       // Intel
+            "/usr/local/bin/\(name)"        // Intel
         ]
         for path in homebrewPaths {
             if FileManager.default.isExecutableFile(atPath: path) {

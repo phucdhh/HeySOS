@@ -48,8 +48,22 @@ targets:
 
     resources:
       - path: Sources/Resources/Assets.xcassets
-      - path: Sources/Resources/Binaries
-        buildPhase: resources
+
+    preBuildScripts:
+      - name: Copy Recovery Engines
+        script: |
+          set -e
+          DST="$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources"
+          mkdir -p "$DST"
+          cp "$SRCROOT/Sources/Resources/Binaries/photorec" "$DST/photorec"
+          cp "$SRCROOT/Sources/Resources/Binaries/testdisk" "$DST/testdisk"
+          chmod +x "$DST/photorec" "$DST/testdisk"
+        inputFiles:
+          - $(SRCROOT)/Sources/Resources/Binaries/photorec
+          - $(SRCROOT)/Sources/Resources/Binaries/testdisk
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/photorec
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/testdisk
 
     entitlements:
       path: Sources/Resources/HeySOS.entitlements

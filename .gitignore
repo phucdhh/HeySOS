@@ -48,12 +48,9 @@ Temporary Items
 
 # =============================
 # Compiled Binaries
-# (built locally via scripts/build-engines.sh,
-#  not committed to keep repo size manageable.
-#  CI pulls pre-built binaries from a tagged release.)
+# photorec and testdisk ARE committed (GPLv3, bundled in .app so users
+# don't need to install Homebrew separately).
 # =============================
-Sources/Resources/Binaries/photorec
-Sources/Resources/Binaries/testdisk
 
 # =============================
 # Build artifacts & signing

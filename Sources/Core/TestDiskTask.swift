@@ -147,9 +147,13 @@ actor TestDiskTask {
     }
 
     private func resolveBinaryURL(name: String) -> URL? {
-        if let url = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "Binaries") {
+        // 1. App bundle — individual file resource (lands in Contents/Resources/)
+        if let url = Bundle.main.url(forResource: name, withExtension: nil) {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: url.path)
             return url
         }
+        // 2. Homebrew fallback
         for path in ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)"] {
             if FileManager.default.isExecutableFile(atPath: path) {
                 return URL(fileURLWithPath: path)

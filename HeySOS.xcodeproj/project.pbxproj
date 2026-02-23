@@ -193,6 +193,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = B862BE71606957029004CADA /* Build configuration list for PBXNativeTarget "HeySOS" */;
 			buildPhases = (
+				478E72735FCDB14643DD3E23 /* Copy Recovery Engines */,
 				7421FA6813E109FB7B8272EF /* Sources */,
 				7A5C3B5579E7A474AD8B7DC3 /* Resources */,
 			);
@@ -264,6 +265,31 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		478E72735FCDB14643DD3E23 /* Copy Recovery Engines */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Sources/Resources/Binaries/photorec",
+				"$(SRCROOT)/Sources/Resources/Binaries/testdisk",
+			);
+			name = "Copy Recovery Engines";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/photorec",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/testdisk",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nDST=\"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources\"\nmkdir -p \"$DST\"\ncp \"$SRCROOT/Sources/Resources/Binaries/photorec\" \"$DST/photorec\"\ncp \"$SRCROOT/Sources/Resources/Binaries/testdisk\" \"$DST/testdisk\"\nchmod +x \"$DST/photorec\" \"$DST/testdisk\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		02B3D3B4E604C84C7F95F8FB /* Sources */ = {
