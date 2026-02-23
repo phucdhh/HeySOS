@@ -48,12 +48,12 @@ Temporary Items
 
 # =============================
 # Compiled Binaries
-# (these are built locally via scripts/build-engines.sh,
+# (built locally via scripts/build-engines.sh,
 #  not committed to keep repo size manageable.
 #  CI pulls pre-built binaries from a tagged release.)
 # =============================
-HeySOS/Resources/Binaries/photorec
-HeySOS/Resources/Binaries/testdisk
+Sources/Resources/Binaries/photorec
+Sources/Resources/Binaries/testdisk
 
 # =============================
 # Build artifacts & signing

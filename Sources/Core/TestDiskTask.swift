@@ -26,18 +26,22 @@ struct PartitionInfo: Identifiable, Hashable {
     let status: PartitionStatus
     let startSector: UInt64
     let endSector: UInt64
+
+    var formattedSize: String {
+        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    }
 }
 
 /// Wraps the TestDisk binary as an async subprocess.
 ///
-/// v1.0 scope: READ-ONLY operations only (Analyse, List).
-/// Write partition table is intentionally excluded — deferred to v1.3.
+/// v1.0 scope: **READ-ONLY** modes only (Analyse, List).
+/// Write partition table is deferred to v1.3.
 ///
-/// TestDisk batch mode:
+/// TestDisk batch mode (non-interactive):
 ///   testdisk /log /cmd "/dev/disk2,analyse,list"
 ///
-/// NOTE: TestDisk writes a testdisk.log file alongside the target device.
-/// Parse that log file for structured partition output.
+/// testdisk writes a `testdisk.log` file in the current working directory.
+/// We parse that log for structured partition output.
 actor TestDiskTask {
 
     // MARK: - State
@@ -47,57 +51,110 @@ actor TestDiskTask {
     // MARK: - Public API
 
     /// Run TestDisk in analyse mode (read-only).
-    /// - Returns: An `AsyncStream` of `TestDiskEvent` values.
+    ///
+    /// - Parameter device: The device to analyse.
+    /// - Returns: An `AsyncStream<TestDiskEvent>`.
     func analyse(device: StorageDevice) -> AsyncStream<TestDiskEvent> {
-        AsyncStream { continuation in
-            guard let binaryURL = Bundle.main.url(
-                forResource: "testdisk",
-                withExtension: nil,
-                subdirectory: "Binaries"
-            ) else {
-                continuation.yield(.failed(error: .binaryNotFound("testdisk")))
-                continuation.finish()
-                return
-            }
-
-            let proc = Process()
-            proc.executableURL = binaryURL
-            // Read-only: /cmd ends with "list" — never "write"
-            proc.arguments = ["/log", "/cmd", "\(device.id),analyse,list"]
-
-            let pipe = Pipe()
-            proc.standardOutput = pipe
-            proc.standardError = pipe
-
-            pipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                // TODO (Milestone 1.3): Parse TestDisk log output
-                _ = data
-            }
-
-            proc.terminationHandler = { p in
-                if p.terminationStatus == 0 {
-                    // TODO: Parse testdisk.log for partition info
-                    continuation.yield(.analysisComplete(partitions: []))
-                } else {
-                    continuation.yield(.failed(error: .processExitedUnexpectedly(p.terminationStatus)))
-                }
-                continuation.finish()
-            }
-
-            do {
-                try proc.run()
-                self.process = proc
-            } catch {
-                continuation.yield(.failed(error: .binaryNotFound("testdisk")))
-                continuation.finish()
-            }
+        AsyncStream { [weak self] continuation in
+            guard let self else { return }
+            Task { await self.launch(device: device, continuation: continuation) }
         }
     }
 
     /// Cancel the running process.
     func cancel() {
         process?.terminate()
+    }
+
+    // MARK: - Private
+
+    private func launch(
+        device: StorageDevice,
+        continuation: AsyncStream<TestDiskEvent>.Continuation
+    ) {
+        guard let binaryURL = resolveBinaryURL(name: "testdisk") else {
+            continuation.yield(.failed(error: .binaryNotFound("testdisk")))
+            continuation.finish()
+            return
+        }
+
+        // testdisk writes log to CWD — use a temp directory
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeySOS-testdisk-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+
+        let proc = Process()
+        proc.executableURL = binaryURL
+        proc.currentDirectoryURL = tmpDir
+        // Read-only: ends with "list" — never "write"
+        proc.arguments = ["/log", "/cmd", "\(device.id),analyse,list"]
+
+        let stderrPipe = Pipe()
+        proc.standardOutput = stderrPipe   // testdisk writes output to stderr in log mode
+        proc.standardError  = stderrPipe
+
+        proc.terminationHandler = { [weak self] p in
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            let logURL = tmpDir.appendingPathComponent("testdisk.log")
+            let partitions = TestDiskLogParser.parseLog(at: logURL)
+
+            Task {
+                await self?.handleTermination(
+                    exitCode: p.terminationStatus,
+                    partitions: partitions,
+                    tmpDir: tmpDir,
+                    continuation: continuation
+                )
+            }
+        }
+
+        do {
+            try proc.run()
+            self.process = proc
+        } catch {
+            continuation.yield(.failed(error: .binaryNotFound("testdisk")))
+            continuation.finish()
+        }
+    }
+
+    private func handleTermination(
+        exitCode: Int32,
+        partitions: [PartitionInfo],
+        tmpDir: URL,
+        continuation: AsyncStream<TestDiskEvent>.Continuation
+    ) {
+        // Emit each found partition
+        for p in partitions {
+            continuation.yield(.partitionFound(
+                index: p.id,
+                type: p.type,
+                size: p.size,
+                status: p.status
+            ))
+        }
+
+        if exitCode == 0 || !partitions.isEmpty {
+            continuation.yield(.analysisComplete(partitions: partitions))
+        } else if exitCode == 15 {
+            continuation.yield(.cancelled)
+        } else {
+            continuation.yield(.failed(error: .processExitedUnexpectedly(exitCode)))
+        }
+        continuation.finish()
+
+        // Clean up temp directory
+        try? FileManager.default.removeItem(at: tmpDir)
+    }
+
+    private func resolveBinaryURL(name: String) -> URL? {
+        if let url = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "Binaries") {
+            return url
+        }
+        for path in ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)"] {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return URL(fileURLWithPath: path)
+            }
+        }
+        return nil
     }
 }

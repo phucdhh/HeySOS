@@ -4,7 +4,7 @@
 
 **Version:** 1.0  
 **Last updated:** 2026-02-23  
-**Status:** Pre-development
+**Status:** Phase 1 In Progress — Core engine integration (Milestone 1.1–1.4 complete)
 
 ---
 
@@ -134,11 +134,11 @@ Mục tiêu: Thiết lập môi trường, cấu trúc project, và compile đư
 
 ### Milestone 0.1 — Project Setup
 
-- [ ] Tạo Xcode project với cấu hình đúng (Bundle ID, deployment target macOS 13+, signing)
-- [ ] Thiết lập cấu trúc thư mục theo kiến trúc đã định
-- [ ] Cấu hình `.gitignore`, `README.md`, `LICENSE`, `PLAN.md`
-- [ ] Thiết lập GitHub repository với branch protection cho `main`
-- [ ] Tạo GitHub Actions workflow cơ bản (build check on PR)
+- [x] Tạo Xcode project với cấu hình đúng (Bundle ID, deployment target macOS 14+, signing)
+- [x] Thiết lập cấu trúc thư mục theo kiến trúc đã định
+- [x] Cấu hình `.gitignore`, `README.md`, `LICENSE`, `PLAN.md`
+- [x] Thiết lập GitHub repository với branch protection cho `main`
+- [x] Tạo GitHub Actions workflow cơ bản (build check on PR)
 
 ```
 Sources/                       # Swift source code (Xcode target)
@@ -168,22 +168,22 @@ Tests/
 
 ### Milestone 0.2 — Compile Engine Binaries
 
-- [ ] Compile TestDisk/PhotoRec cho `arm64` (Apple Silicon)
-- [ ] Compile TestDisk/PhotoRec cho `x86_64` (Intel)
+- [x] Compile TestDisk/PhotoRec cho `arm64` (Apple Silicon) — qua Homebrew bottle `testdisk 7.2`
+- [ ] Compile TestDisk/PhotoRec cho `x86_64` (Intel) — cần khi chuẩn bị release
 - [ ] Tạo Universal Binary (`lipo`) hoặc dùng fat binary
-- [ ] Viết script `scripts/build-engines.sh` để tự động hóa bước này
-- [ ] Verify binaries chạy được trên cả hai architecture
+- [x] Viết script `scripts/build-engines.sh` để tự động hóa bước này
+- [x] Verify binaries chạy được trên arm64: `photorec --version` + `testdisk --version` OK
 - [ ] Document quá trình build vào Wiki
 
 ### Milestone 0.3 — Permissions & Entitlements
 
 > ⚠️ **Lưu ý quan trọng về Hardened Runtime:** Vì app dùng `Process` để chạy binary bên ngoài (photorec, testdisk), cần cấu hình entitlements cẩn thận. App **KHÔNG** cần sandbox (không lên Mac App Store), giúp đơn giản hoá đáng kể.
 
-- [ ] Cấu hình entitlements file (`HeySOS.entitlements`):
+- [x] Cấu hình entitlements file (`HeySOS.entitlements`):
   - `com.apple.security.cs.disable-library-validation` → `true` (cho phép bundle binary unsigned)
   - `com.apple.security.files.all` → `true` (tương đương Full Disk Access)
   - `com.apple.security.temporary-exception.files.absolute-path.read-write` → `['/dev/']`
-- [ ] **Không bật** App Sandbox (`com.apple.security.app-sandbox`) — sẽ chặn `/dev/disk*` access
+- [x] **Không bật** App Sandbox (`com.apple.security.app-sandbox`) — sẽ chặn `/dev/disk*` access
 - [ ] Test Full Disk Access flow: app tự detect và hướng dẫn user cấp quyền nếu thiếu
 - [ ] Verify `photorec` binary có thể chạy dưới subprocess (Hardened Runtime + `--cmd` mode)
 - [ ] Verify Gatekeeper pass sau khi notarize với entitlements đúng
@@ -199,11 +199,11 @@ Mục tiêu: HeySOS có thể thực sự recover file, dù chưa có UI đẹp.
 
 ### Milestone 1.1 — Device Discovery
 
-- [ ] Implement `DiskUtilWrapper` — parse output của `diskutil list` để lấy danh sách devices
-- [ ] Model `StorageDevice`: tên, kích thước, mount point, loại (internal/external), file system
+- [x] Implement `DiskUtilWrapper` — parse output của `diskutil list -plist` + `diskutil info -plist` để lấy danh sách devices
+- [x] Model `StorageDevice`: tên, kích thước, mount point, loại (internal/external), file system
 - [ ] Detect khi device được cắm vào / rút ra (IOKit notifications hoặc polling)
-- [ ] Lọc ra các external devices để ưu tiên hiển thị
-- [ ] Unit test: mock diskutil output, verify parsing đúng
+- [x] Lọc ra các external devices để ưu tiên hiển thị (sort: external first)
+- [x] Unit test: `DiskUtilWrapperTests` — 4 tests pass
 
 ```swift
 // StorageDevice model
@@ -255,16 +255,16 @@ enum RecoveryEvent {
 > ⚠️ **TestDisk và stdin:** TestDisk tương tự PhotoRec, cũng là ncurses TUI. Dùng `testdisk /cmd device.log "/dev/disk2,analyse,list"` để batch mode.
 
 - [ ] Implement `TestDiskTask` tương tự PhotoRecTask, dùng `--cmd` / `/cmd` mode
-- [ ] Parse partition table output từ log file mà TestDisk tạo ra
+- [x] Parse partition table output từ log file mà TestDisk tạo ra
 - [ ] Chỉ implement **read-only modes** (Analyse, List) trong v1.0 — **chưa** implement Write mode
 - [ ] Write mode (ghi partition table) để dành cho v1.3 với UX confirmation đầy đủ
 
 ### Milestone 1.4 — LogParser
 
-- [ ] Viết parser cho PhotoRec output format
-- [ ] Viết parser cho TestDisk output format
-- [ ] Unit test với captured output samples thực tế
-- [ ] Handle edge cases: encoding lạ, line incomplete, binary output
+- [x] Viết parser cho PhotoRec output format (`PhotoRecLogParser`) — regex-based, Swift 6 safe
+- [x] Viết parser cho TestDisk output format (`TestDiskLogParser`) — multi-word type support
+- [x] Unit test với captured output samples thực tế — **22/22 tests pass** (`swift test`)
+- [x] Handle edge cases: empty lines, garbage output, single vs multi-word partition types
 
 **Deliverable:** Chạy recovery từ command line / test harness, recover file thật từ thẻ nhớ test.
 

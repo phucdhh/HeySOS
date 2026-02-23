@@ -25,9 +25,9 @@ enum RecoveryError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .binaryNotFound(let name):
-            return "Could not find the '\(name)' binary inside the app bundle."
+            return "Could not find the '\(name)' binary. Please run scripts/build-engines.sh or install TestDisk via Homebrew."
         case .insufficientPermissions:
-            return "HeySOS needs Full Disk Access to scan this device. Please grant access in System Settings → Privacy & Security → Full Disk Access."
+            return "HeySOS needs Full Disk Access to scan this device.\nGo to: System Settings → Privacy & Security → Full Disk Access → enable HeySOS."
         case .deviceNotFound(let d):
             return "The device '\(d.name)' (\(d.id)) is no longer available."
         case .outputDirectoryNotWritable(let url):
@@ -40,60 +40,104 @@ enum RecoveryError: LocalizedError {
     }
 }
 
+// MARK: - RecoveryManager
+
 /// Central coordinator for all recovery operations.
-/// Spawns PhotoRecTask / TestDiskTask and aggregates events.
 @MainActor
 final class RecoveryManager: ObservableObject {
 
     // MARK: - Published state
+
+    @Published private(set) var devices: [StorageDevice] = []
+    @Published private(set) var isLoadingDevices: Bool = false
 
     @Published private(set) var isRunning: Bool = false
     @Published private(set) var recoveredFiles: [RecoveredFile] = []
     @Published private(set) var progressPercent: Double = 0
     @Published private(set) var filesFound: Int = 0
     @Published private(set) var currentSpeed: String = ""
+    @Published private(set) var estimatedSecondsRemaining: Int = 0
     @Published private(set) var lastError: RecoveryError?
+    @Published private(set) var activeOutputDir: URL?
 
     // MARK: - Private
 
     private var photoRecTask: PhotoRecTask?
-    private var eventStream: AsyncStream<RecoveryEvent>.Continuation?
 
-    // MARK: - Public API
+    // MARK: - Device Discovery
 
-    /// Start a PhotoRec recovery session on the given device.
+    /// Load (or refresh) the list of storage devices.
+    func loadDevices() async {
+        guard !isLoadingDevices else { return }
+        isLoadingDevices = true
+        defer { isLoadingDevices = false }
+
+        do {
+            let found = try await Task.detached(priority: .userInitiated) {
+                try DiskUtilWrapper.listDevices()
+            }.value
+            self.devices = found
+        } catch {
+            // Non-fatal — show empty list, user can retry
+            self.devices = []
+        }
+    }
+
+    // MARK: - Recovery
+
+    /// Start a PhotoRec recovery session.
+    ///
     /// - Parameters:
-    ///   - device: The storage device to scan.
-    ///   - outputDir: Directory where recovered files will be written.
-    func startPhotoRecRecovery(device: StorageDevice, outputDir: URL) async {
+    ///   - device: Storage device to scan (read-only).
+    ///   - outputDir: Directory where PhotoRec will write recovered files.
+    ///   - fileTypes: PhotoRec file type selector string (default: recover everything).
+    func startRecovery(
+        device: StorageDevice,
+        outputDir: URL,
+        fileTypes: String = "everything,enable"
+    ) async {
         guard !isRunning else { return }
+
+        resetSessionState()
         isRunning = true
-        recoveredFiles = []
-        progressPercent = 0
-        filesFound = 0
-        lastError = nil
+        activeOutputDir = outputDir
 
         let task = PhotoRecTask()
         self.photoRecTask = task
 
-        let stream = task.start(device: device, outputDir: outputDir)
+        let stream = await task.start(device: device, outputDir: outputDir, fileTypes: fileTypes)
 
         for await event in stream {
             handle(event: event)
             if case .completed = event { break }
-            if case .failed = event { break }
+            if case .failed    = event { break }
             if case .cancelled = event { break }
         }
 
         isRunning = false
+
+        // After completion: enumerate recovered files from outputDir
+        if lastError == nil {
+            await enumerateRecoveredFiles(in: outputDir)
+        }
     }
 
-    /// Cancel the running recovery session.
-    func cancel() {
-        photoRecTask?.cancel()
+    /// Cancel the ongoing recovery session.
+    func cancelRecovery() {
+        Task { await photoRecTask?.cancel() }
     }
 
     // MARK: - Private
+
+    private func resetSessionState() {
+        recoveredFiles = []
+        progressPercent = 0
+        filesFound = 0
+        currentSpeed = ""
+        estimatedSecondsRemaining = 0
+        lastError = nil
+        activeOutputDir = nil
+    }
 
     private func handle(event: RecoveryEvent) {
         switch event {
@@ -101,16 +145,58 @@ final class RecoveryManager: ObservableObject {
             filesFound = found
             currentSpeed = speed
             progressPercent = pct
+
         case .fileRecovered(let name, let type, let size):
-            // TODO: Construct full RecoveredFile from outputDir + name
+            // PhotoRec --cmd doesn't emit per-file events; we enumerate after completion.
+            // This case is available for future per-file parsers.
             _ = (name, type, size)
-        case .completed(let total, let dir):
+
+        case .completed(let total, _):
             filesFound = total
-            _ = dir
+
         case .failed(let error):
             lastError = error
+
         case .cancelled:
             break
         }
+    }
+
+    /// Walk the output directory and build the `recoveredFiles` array.
+    private func enumerateRecoveredFiles(in dir: URL) async {
+        let found = await Task.detached(priority: .userInitiated) {
+            Self.scanDirectory(dir)
+        }.value
+        self.recoveredFiles = found
+        self.filesFound = found.count
+    }
+
+    private nonisolated static func scanDirectory(_ dir: URL) -> [RecoveredFile] {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: dir,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+
+        var files: [RecoveredFile] = []
+        for case let url as URL in enumerator {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { continue }
+
+            let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let size  = Int64(attrs?.fileSize ?? 0)
+            let date  = attrs?.contentModificationDate ?? Date()
+
+            files.append(RecoveredFile(
+                id: UUID(),
+                name: url.lastPathComponent,
+                fileExtension: url.pathExtension,
+                size: size,
+                recoveredAt: date,
+                fileURL: url
+            ))
+        }
+        return files.sorted { $0.name < $1.name }
     }
 }

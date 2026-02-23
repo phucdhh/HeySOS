@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		05D2EA9AFBCA3BBBCF3C76FD /* StorageDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89D16B44D50257109B197C82 /* StorageDevice.swift */; };
 		1761D3CEF78A1C275FA6F6DA /* DeviceSelectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33F5EB9B424846DD42715653 /* DeviceSelectorView.swift */; };
+		279625729C743D2F2DF00158 /* DiskUtilWrapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 517C0AFF0DC83128EE9690A0 /* DiskUtilWrapperTests.swift */; };
 		483EB6728920548DE1B0BBA2 /* DiskUtilWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE0275C5D0A6BD9022F05DD1 /* DiskUtilWrapper.swift */; };
 		5A0F84F1BB06AEA5418DAF10 /* ResultsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D34725BCC5778E99B1D9B20 /* ResultsView.swift */; };
 		77BB62D583D14C283A6A9536 /* RecoveryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECC9A617857ED1C2A45EBCE4 /* RecoveryManager.swift */; };
@@ -18,6 +19,7 @@
 		90AA7EFA79C1A7966D5387FD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2288E3A6BB48553A20A0820D /* Assets.xcassets */; };
 		A15541BC936EE877B1858B81 /* LogParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4421A6F67B343617464F861 /* LogParser.swift */; };
 		AAB96C1BDF7228B094332DB8 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 780E012C87995726FB4AB94E /* ContentView.swift */; };
+		E1E3C19E094B825604A6C357 /* LogParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9416EC45DC803366DCBEC51B /* LogParserTests.swift */; };
 		EECC09C8833DECF34F7F60ED /* RecoveredFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB0A2DF8092A67F044F3E955 /* RecoveredFile.swift */; };
 		FDEBA2A09C906B69A5EC6BDE /* HeySOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = E72E94B485BB11B6A099B6A3 /* HeySOS.swift */; };
 /* End PBXBuildFile section */
@@ -37,11 +39,13 @@
 		2288E3A6BB48553A20A0820D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2D34725BCC5778E99B1D9B20 /* ResultsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultsView.swift; sourceTree = "<group>"; };
 		33F5EB9B424846DD42715653 /* DeviceSelectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceSelectorView.swift; sourceTree = "<group>"; };
+		517C0AFF0DC83128EE9690A0 /* DiskUtilWrapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskUtilWrapperTests.swift; sourceTree = "<group>"; };
 		54758A8AC2D5CD4957096ECB /* TestDiskTask.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestDiskTask.swift; sourceTree = "<group>"; };
 		65055913139671EDDDB4634E /* HeySOS-Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "HeySOS-Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		780E012C87995726FB4AB94E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		82A9623FA44509B16A6C2C27 /* HeySOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HeySOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		89D16B44D50257109B197C82 /* StorageDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageDevice.swift; sourceTree = "<group>"; };
+		9416EC45DC803366DCBEC51B /* LogParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogParserTests.swift; sourceTree = "<group>"; };
 		952C46F4C3C5493BDDA8E81D /* ScanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanView.swift; sourceTree = "<group>"; };
 		BE0275C5D0A6BD9022F05DD1 /* DiskUtilWrapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskUtilWrapper.swift; sourceTree = "<group>"; };
 		C984BA777AD2D2C4F9A50950 /* PhotoRecTask.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoRecTask.swift; sourceTree = "<group>"; };
@@ -89,6 +93,14 @@
 			path = Core;
 			sourceTree = "<group>";
 		};
+		22F96EAB43E0B595724B68F1 /* RecoveryManagerTests */ = {
+			isa = PBXGroup;
+			children = (
+				517C0AFF0DC83128EE9690A0 /* DiskUtilWrapperTests.swift */,
+			);
+			path = RecoveryManagerTests;
+			sourceTree = "<group>";
+		};
 		284C9A17A4DF90B7F3415A2B /* Features */ = {
 			isa = PBXGroup;
 			children = (
@@ -111,6 +123,8 @@
 		44D9CC25623D60211C57FDEF /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				97751EA28B3F46FDC7F61CD0 /* LogParserTests */,
+				22F96EAB43E0B595724B68F1 /* RecoveryManagerTests */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -145,6 +159,14 @@
 				1A395B0F87C91644BAFDB6C9 /* Resources */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		97751EA28B3F46FDC7F61CD0 /* LogParserTests */ = {
+			isa = PBXGroup;
+			children = (
+				9416EC45DC803366DCBEC51B /* LogParserTests.swift */,
+			);
+			path = LogParserTests;
 			sourceTree = "<group>";
 		};
 		AF1A48A6E3C1B0F9EE5252EC /* DeviceSelector */ = {
@@ -248,6 +270,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				279625729C743D2F2DF00158 /* DiskUtilWrapperTests.swift in Sources */,
+				E1E3C19E094B825604A6C357 /* LogParserTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
