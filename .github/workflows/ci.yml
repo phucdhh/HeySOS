@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: macos-14          # Apple Silicon runner (Sonoma)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Show build environment
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build (Debug)
+        run: |
+          xcodebuild build \
+            -project HeySOS.xcodeproj \
+            -scheme HeySOS \
+            -destination 'platform=macOS' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+      - name: Run Tests
+        run: |
+          xcodebuild test \
+            -project HeySOS.xcodeproj \
+            -scheme HeySOS \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+  # -----------------------------------------------------------------------
+  # Future job: Notarized release build (Phase 3)
+  # Requires secrets: CERTIFICATES_P12, CERTIFICATES_P12_PASSWORD,
+  #                   APPLE_ID, APPLE_ID_PASSWORD, TEAM_ID
+  # -----------------------------------------------------------------------
+  # release:
+  #   name: Notarized Release
+  #   needs: build
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   runs-on: macos-14
+  #   steps:
+  #     - ... (see Phase 3, Milestone 3.4)
