@@ -368,6 +368,13 @@ actor PhotoRecTask {
                 send "c"
                 exp_continue
             }
+            "Answer Y to really Quit" {
+                # PhotoRec failed to write its .photorec.ses resume file (common on
+                # read-only source disks).  Reply N to resume; scan continues without
+                # session-save support — all files recovered so far are kept.
+                send "n"
+                exp_continue
+            }
             "files recovered" {
                 # Scan finished — fall through to eof wait
             }
@@ -387,11 +394,14 @@ actor PhotoRecTask {
         """
     }
 
-    /// Resolve binary for photorec:
-    /// The app bundle is preferred — it's compiled WITHOUT ncurses so it runs
-    /// in fully automatic batch mode. Homebrew is used as a fallback only.
+    // MARK: - Private — helpers
+
+    /// Resolve the photorec binary.
+    /// The bundled binary (a copy of the Homebrew build, compiled with ncurses)
+    /// is preferred so the app works without Homebrew installed.
+    /// Homebrew is used as a fallback in case the bundle copy is missing.
     private func resolveBinaryURL(name: String) -> URL? {
-        // 1. App bundle — compiled without ncurses (batch mode, no TUI)
+        // 1. App bundle — ncurses-enabled build (driven by the Expect script)
         if let url = Bundle.main.url(forResource: name, withExtension: nil) {
             try? FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: url.path)
