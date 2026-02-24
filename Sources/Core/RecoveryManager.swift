@@ -6,7 +6,7 @@ import Foundation
 
 /// Events emitted during a recovery session.
 enum RecoveryEvent {
-    case progress(filesFound: Int, speed: String, percent: Double)
+    case progress(filesFound: Int, speed: String, percent: Double, estimatedSeconds: Int)
     case fileRecovered(name: String, type: String, size: Int64)
     case completed(totalFiles: Int, outputDir: URL)
     case failed(error: RecoveryError)
@@ -61,6 +61,8 @@ final class RecoveryManager: ObservableObject {
     @Published private(set) var estimatedSecondsRemaining: Int = 0
     @Published private(set) var lastError: RecoveryError?
     @Published private(set) var activeOutputDir: URL?
+    /// Scan options set by the user before starting.
+    @Published var scanOptions: ScanOptions = ScanOptions()
     /// Accumulated raw console output from the recovery engine.
     @Published private(set) var consoleLog: String = ""
 
@@ -76,6 +78,12 @@ final class RecoveryManager: ObservableObject {
     private let logFlushInterval: Duration = .milliseconds(800)
     /// Maximum number of lines kept in `consoleLog` to bound layout cost.
     private let maxLogLines = 500
+
+    // Wall-clock progress interpolation — moves the bar smoothly between log events.
+    private var progressInterpolTimer: Timer?
+    private var progressBasePercent: Double = 0   // percent (0-99) at last .progress event
+    private var progressBaseTime: Date = .distantPast
+    private var progressBaseETA: Double = 1       // estimated seconds remaining at last event
 
     // MARK: - Device Discovery
 
@@ -116,7 +124,7 @@ final class RecoveryManager: ObservableObject {
         let task = PhotoRecTask()
         self.photoRecTask = task
 
-        let stream = await task.start(device: device, outputDir: outputDir)
+        let stream = await task.start(device: device, outputDir: outputDir, options: scanOptions)
 
         for await event in stream {
             handle(event: event)
@@ -130,10 +138,9 @@ final class RecoveryManager: ObservableObject {
         // Flush any remaining buffered log text immediately.
         flushPendingLog()
 
-        // After completion: enumerate recovered files from outputDir
-        if lastError == nil {
-            await enumerateRecoveredFiles(in: outputDir)
-        }
+        // Always enumerate recovered files — PhotoRec may have recovered files
+        // even when it exits with a non-zero code (e.g. session-save failure).
+        await enumerateRecoveredFiles(in: outputDir)
     }
 
     /// Cancel the ongoing recovery session.
@@ -143,6 +150,10 @@ final class RecoveryManager: ObservableObject {
 
     /// Reset results so the user can start a new scan.
     func resetRecovery() {
+        stopProgressTimer()
+        progressBasePercent = 0
+        progressBaseTime = .distantPast
+        progressBaseETA = 1
         recoveredFiles = []
         progressPercent = 0
         filesFound = 0
@@ -154,6 +165,10 @@ final class RecoveryManager: ObservableObject {
     // MARK: - Private
 
     private func resetSessionState() {
+        stopProgressTimer()
+        progressBasePercent = 0
+        progressBaseTime = .distantPast
+        progressBaseETA = 1
         recoveredFiles = []
         progressPercent = 0
         filesFound = 0
@@ -168,10 +183,20 @@ final class RecoveryManager: ObservableObject {
 
     private func handle(event: RecoveryEvent) {
         switch event {
-        case .progress(let found, let speed, let pct):
+        case .progress(let found, let speed, let pct, let eta):
             filesFound = found
             currentSpeed = speed
-            progressPercent = pct
+            // Always accept an advancing percent from the parser.
+            if pct > progressPercent { progressPercent = pct }
+            // Only start the interpolation timer once we have a genuine ETA.
+            // Without a real ETA, the default of 1 s would race the bar to 99%.
+            if eta > 0 {
+                estimatedSecondsRemaining = eta
+                progressBasePercent = progressPercent
+                progressBaseTime = Date()
+                progressBaseETA = Double(eta)
+                startProgressTimer()
+            }
 
         case .fileRecovered(let name, let type, let size):
             // PhotoRec --cmd doesn't emit per-file events; we enumerate after completion.
@@ -180,17 +205,40 @@ final class RecoveryManager: ObservableObject {
 
         case .completed(let total, _):
             filesFound = total
+            stopProgressTimer()
+            progressPercent = 100
 
         case .failed(let error):
+            stopProgressTimer()
             lastError = error
 
         case .cancelled:
-            break
+            stopProgressTimer()
 
         case .log(let text):
             pendingLog += text
             scheduleLogFlush()
         }
+    }
+
+    /// Advances progressPercent smoothly using wall-clock time since the last .progress event.
+    private func startProgressTimer() {
+        guard progressInterpolTimer == nil else { return }
+        progressInterpolTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let wall = Date().timeIntervalSince(self.progressBaseTime)
+            // Each second of wall time represents 1 s / ETA of total distance.
+            let advance = (wall / self.progressBaseETA) * 100.0
+            let newPct = min(99.0, self.progressBasePercent + advance)
+            if newPct > self.progressPercent {
+                self.progressPercent = newPct
+            }
+        }
+    }
+
+    private func stopProgressTimer() {
+        progressInterpolTimer?.invalidate()
+        progressInterpolTimer = nil
     }
 
     /// Coalesces buffered log text into a single `consoleLog` publish,
@@ -226,31 +274,56 @@ final class RecoveryManager: ObservableObject {
         self.filesFound = found.count
     }
 
-    private nonisolated static func scanDirectory(_ dir: URL) -> [RecoveredFile] {
+    private nonisolated static func scanDirectory(_ baseDir: URL) -> [RecoveredFile] {
         let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: dir,
-            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return [] }
+        let parent   = baseDir.deletingLastPathComponent()
+        let baseName = baseDir.lastPathComponent
+
+        // PhotoRec writes recovered files into SIBLING directories named
+        // with a numeric suffix: HeySOS_Recovered.1/, HeySOS_Recovered.2/ …
+        // The baseDir itself may also contain recup_dir.N subdirectories
+        // (older photorec behaviour), so always include it as a root.
+        var searchRoots: [URL] = [baseDir]
+        if let siblings = try? fm.contentsOfDirectory(
+            at: parent,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) {
+            for sib in siblings {
+                let name = sib.lastPathComponent
+                guard name.hasPrefix(baseName + ".")
+                else { continue }
+                let suffix = name.dropFirst(baseName.count + 1)
+                guard !suffix.isEmpty, suffix.allSatisfy({ $0.isNumber })
+                else { continue }
+                var isDir: ObjCBool = false
+                fm.fileExists(atPath: sib.path, isDirectory: &isDir)
+                if isDir.boolValue { searchRoots.append(sib) }
+            }
+        }
 
         var files: [RecoveredFile] = []
-        for case let url as URL in enumerator {
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { continue }
-
-            let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-            let size  = Int64(attrs?.fileSize ?? 0)
-            let date  = attrs?.contentModificationDate ?? Date()
-
-            files.append(RecoveredFile(
-                id: UUID(),
-                name: url.lastPathComponent,
-                fileExtension: url.pathExtension,
-                size: size,
-                recoveredAt: date,
-                fileURL: url
-            ))
+        for root in searchRoots {
+            guard let enumerator = fm.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) else { continue }
+            for case let url as URL in enumerator {
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: url.path, isDirectory: &isDir),
+                      !isDir.boolValue else { continue }
+                let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                let size  = Int64(attrs?.fileSize ?? 0)
+                let date  = attrs?.contentModificationDate ?? Date()
+                files.append(RecoveredFile(
+                    id: UUID(),
+                    name: url.lastPathComponent,
+                    fileExtension: url.pathExtension,
+                    size: size,
+                    recoveredAt: date,
+                    fileURL: url
+                ))
+            }
         }
         return files.sorted { $0.name < $1.name }
     }

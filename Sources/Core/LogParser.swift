@@ -28,10 +28,17 @@ enum PhotoRecLogParser {
         var recoveredTypes: [String: Int] = [:]
         var isCompleted: Bool      = false
 
-        /// 0.0 – 1.0 progress fraction
+        /// 0.0 – 1.0 progress fraction.
+        /// Uses sector-based progress when available, otherwise falls back to
+        /// elapsed / (elapsed + estimated) so the bar moves smoothly even between
+        /// full "Pass X - Reading sector" redraws.
         var fraction: Double? {
-            guard totalSectors > 0 else { return nil }
-            return Double(currentSector) / Double(totalSectors)
+            if totalSectors > 0 && currentSector > 0 {
+                return min(1.0, Double(currentSector) / Double(totalSectors))
+            }
+            let total = elapsedSeconds + estimatedSeconds
+            guard total > 0 else { return nil }
+            return min(0.99, Double(elapsedSeconds) / Double(total))
         }
 
         var percentString: String {
@@ -66,12 +73,13 @@ enum PhotoRecLogParser {
     // MARK: - Private — individual line parsers
 
     /// "Pass 1 - Reading sector     32768/124735488, 14 files found"
+    /// Also handles no-space variant: "Pass 1 - Reading sector5400/7864320, 0 files found"
     @discardableResult
     private static func parseSectorProgress(_ line: String, into r: inout ParseResult) -> Bool {
         guard line.hasPrefix("Pass") else { return false }
 
-        // Sector fraction: digits/digits
-        let sectorPattern = /Reading sector\s+(\d+)\/(\d+),\s+(\d+) file/
+        // Sector fraction: digits/digits — \s* tolerates zero spaces (ncurses redraw)
+        let sectorPattern = /Reading sector\s*(\d+)\/(\d+),\s*(\d+) file/
         guard let m = try? sectorPattern.firstMatch(in: line) else { return false }
 
         r.currentSector = Int64(m.output.1) ?? r.currentSector
@@ -80,12 +88,13 @@ enum PhotoRecLogParser {
         return true
     }
 
-    /// "Elapsed time 0h05m23s - Estimated time for achievement 0h17m51s"
+    /// "Elapsed time 0h05m23s - Estimated time to completion 0h17m51"
+    /// The trailing 's' on estimated time is sometimes absent in PhotoRec 7.2 output.
     @discardableResult
     private static func parseElapsedTime(_ line: String, into r: inout ParseResult) -> Bool {
         guard line.hasPrefix("Elapsed time") else { return false }
 
-        let timePattern = /(\d+)h(\d+)m(\d+)s/
+        let timePattern = /(\d+)h(\d+)m(\d+)s?/
         // Use String.matches(of:) — returns a collection of Match objects
         let allMatches = line.matches(of: timePattern)
         guard !allMatches.isEmpty else { return false }
@@ -102,10 +111,11 @@ enum PhotoRecLogParser {
         return true
     }
 
-    /// "jpg: 14 recovered"  /  "png:  2 recovered"
+    /// "jpg: 14 recovered"  /  "png:  2 recovered"  /  "tx?: 1 recovered"
     @discardableResult
     private static func parseFileTypeCount(_ line: String, into r: inout ParseResult) -> Bool {
-        let pattern = /^([a-zA-Z0-9]+):\s+(\d+) recovered/
+        // Extension names can include '?' (e.g. PhotoRec uses "tx?" for unknown text)
+        let pattern = /^([a-zA-Z0-9?]+):\s+(\d+) recovered/
         guard let m = try? pattern.firstMatch(in: line) else { return false }
         let ext   = String(m.output.1).lowercased()
         let count = Int(m.output.2) ?? 0

@@ -3,21 +3,56 @@
 // Copyright (C) 2026 HeySOS Contributors — GPLv3
 
 import SwiftUI
+import QuickLookUI
 
-/// Milestone 2.5 placeholder — Grid/List of recovered files.
+// MARK: - Quick Look coordinator
+
+/// Bridges SwiftUI to the AppKit QLPreviewPanel.
+/// We set ourselves directly as the panel's dataSource rather than relying
+/// on the responder chain, which is simpler in a SwiftUI app.
+final class QLCoordinator: NSObject, ObservableObject, QLPreviewPanelDataSource {
+
+    var previewURLs: [URL] = []
+
+    // MARK: QLPreviewPanelDataSource
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { previewURLs.count }
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
+        previewURLs[index] as NSURL
+    }
+
+    func preview(_ urls: [URL]) {
+        previewURLs = urls
+        guard let panel = QLPreviewPanel.shared() else { return }
+        panel.dataSource = self
+        if panel.isVisible { panel.reloadData() } else { panel.makeKeyAndOrderFront(nil) }
+    }
+}
+
+// MARK: - ResultsView
+
 struct ResultsView: View {
 
     @EnvironmentObject var recoveryManager: RecoveryManager
-    @State private var searchText = ""
+    @StateObject private var ql = QLCoordinator()
+
+    @State private var searchText       = ""
     @State private var filterType: FileType? = nil
+    @State private var sortOrder        = SortOrder.nameAscending
+    @State private var selectedFileID: UUID? = nil
+
+    // MARK: - Computed
 
     private var displayedFiles: [RecoveredFile] {
-        recoveryManager.recoveredFiles.filter { file in
-            (filterType == nil || file.fileType == filterType) &&
-            (searchText.isEmpty ||
-             file.name.localizedCaseInsensitiveContains(searchText))
-        }
+        recoveryManager.recoveredFiles
+            .filter { file in
+                (filterType == nil || file.fileType == filterType) &&
+                (searchText.isEmpty ||
+                 file.name.localizedCaseInsensitiveContains(searchText))
+            }
+            .sorted(by: sortOrder.comparator)
     }
+
+    // MARK: - Body
 
     var body: some View {
         Group {
@@ -28,7 +63,7 @@ struct ResultsView: View {
                     description: Text("Start a scan to recover deleted files.")
                 )
             } else {
-                fileGrid
+                fileTable
             }
         }
         .searchable(text: $searchText, prompt: "Search files…")
@@ -36,60 +71,173 @@ struct ResultsView: View {
         .toolbar { toolbarContent }
     }
 
-    // MARK: - Grid
+    // MARK: - Table
 
-    private let columns = [GridItem(.adaptive(minimum: 120, maximum: 160))]
-
-    private var fileGrid: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(displayedFiles) { file in
-                    FileCell(file: file)
+    private var fileTable: some View {
+        Table(displayedFiles, selection: $selectedFileID) {
+            TableColumn("Name") { file in
+                HStack(spacing: 8) {
+                    Image(systemName: file.fileType.symbolName)
+                        .foregroundStyle(.blue)
+                        .frame(width: 20)
+                    Text(file.name)
+                        .lineLimit(1)
                 }
+                .contentShape(Rectangle())
+                .contextMenu { contextMenu(for: file) }
             }
-            .padding()
+            .width(min: 200)
+
+            TableColumn("Type") { file in
+                Text(file.fileExtension.isEmpty ? "—" : file.fileExtension.uppercased())
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+            .width(60)
+
+            TableColumn("Size") { file in
+                Text(file.formattedSize)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+            .width(90)
+
+            TableColumn("Recovered") { file in
+                Text(file.recoveredAt, style: .date)
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+            .width(100)
         }
+        .focusable()
+        .onKeyPress(.space) {
+            triggerQuickLook()
+            return .handled
+        }
+        .onChange(of: selectedFileID) { _, _ in
+            if QLPreviewPanel.sharedPreviewPanelExists(),
+               let panel = QLPreviewPanel.shared(), panel.isVisible {
+                triggerQuickLook()
+            }
+        }
+    }
+
+    // MARK: - Context menu
+
+    @ViewBuilder
+    private func contextMenu(for file: RecoveredFile) -> some View {
+        Button("Open in Finder") {
+            NSWorkspace.shared.selectFile(file.fileURL.path,
+                                          inFileViewerRootedAtPath: "")
+        }
+        Button("Quick Look") {
+            selectedFileID = file.id
+            ql.preview([file.fileURL])
+        }
+        Divider()
+        Button("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(file.fileURL.path, forType: .string)
+        }
+    }
+
+    // MARK: - Quick Look trigger
+
+    private func triggerQuickLook() {
+        guard let id = selectedFileID,
+              let file = recoveryManager.recoveredFiles.first(where: { $0.id == id })
+        else { return }
+        ql.preview([file.fileURL])
     }
 
     // MARK: - Toolbar
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button("Save All") {
-                // TODO: Copy all files to user-chosen destination
+        ToolbarItem(placement: .navigation) {
+            Picker("Filter", selection: $filterType) {
+                Text("All Types").tag(Optional<FileType>.none)
+                Divider()
+                Text("Photos").tag(Optional(FileType.image))
+                Text("Videos").tag(Optional(FileType.video))
+                Text("Documents").tag(Optional(FileType.document))
+                Text("Audio").tag(Optional(FileType.audio))
+                Text("Archives").tag(Optional(FileType.archive))
             }
-            .disabled(recoveryManager.recoveredFiles.isEmpty)
+            .pickerStyle(.menu)
+            .fixedSize()
+        }
+
+        ToolbarItem(placement: .primaryAction) {
+            Picker("Sort", selection: $sortOrder) {
+                ForEach(SortOrder.allCases, id: \.self) {
+                    Text($0.label).tag($0)
+                }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+        }
+
+        ToolbarItem(placement: .status) {
+            Text("Select a file · Space to preview · Right-click for options")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
 
-// MARK: - FileCell
+// MARK: - SpaceBar handler (NSEvent local monitor)
 
-struct FileCell: View {
-    let file: RecoveredFile
+/// Invisible NSViewRepresentable that installs a local key-down monitor.
+/// Calls `onSpace` whenever the space bar is pressed while the window is key.
+struct SpaceBarHandler: NSViewRepresentable {
+    let onSpace: () -> Void
 
-    var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: file.fileType.symbolName)
-                .font(.system(size: 40))
-                .foregroundStyle(.blue)
-
-            Text(file.name)
-                .font(.caption2)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-
-            Text(file.formattedSize)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(8)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-        .contextMenu {
-            Button("Show in Finder") {
-                NSWorkspace.shared.selectFile(file.fileURL.path, inFileViewerRootedAtPath: "")
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 49 { // space bar
+                self.onSpace()
+                return nil // consume the event
             }
+            return event
+        }
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        if let m = coordinator.monitor { NSEvent.removeMonitor(m) }
+    }
+
+    final class Coordinator {
+        var monitor: Any?
+    }
+}
+
+// MARK: - Sort order
+
+enum SortOrder: String, CaseIterable {
+    case nameAscending, nameDescending, sizeDescending, dateDescending
+
+    var label: String {
+        switch self {
+        case .nameAscending:  return "Name A→Z"
+        case .nameDescending: return "Name Z→A"
+        case .sizeDescending: return "Largest First"
+        case .dateDescending: return "Newest First"
+        }
+    }
+
+    var comparator: (RecoveredFile, RecoveredFile) -> Bool {
+        switch self {
+        case .nameAscending:  return { $0.name.localizedCompare($1.name) == .orderedAscending }
+        case .nameDescending: return { $0.name.localizedCompare($1.name) == .orderedDescending }
+        case .sizeDescending: return { $0.size > $1.size }
+        case .dateDescending: return { $0.recoveredAt > $1.recoveredAt }
         }
     }
 }

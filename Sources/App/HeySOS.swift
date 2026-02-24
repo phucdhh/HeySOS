@@ -9,7 +9,7 @@ struct HeySOS: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: 600, minHeight: 400)
         }
         .windowResizability(.contentMinSize)
         .commands {

@@ -4,6 +4,16 @@
 
 import Foundation
 
+// MARK: - ScanOptions
+
+/// User-visible options that control how PhotoRec scans the disk.
+struct ScanOptions: Equatable {
+    /// When true, scan the whole partition (not just unallocated/free clusters).
+    var scanWholePartition: Bool = false
+    /// File type extensions to recover. Empty = recover all types.
+    var fileTypeFilter: Set<String> = []
+}
+
 /// Wraps the PhotoRec binary, running it with administrator privileges via
 /// `osascript do shell script … with administrator privileges`.
 ///
@@ -56,15 +66,17 @@ actor PhotoRecTask {
     /// - Parameters:
     ///   - device: The device to scan (read-only).
     ///   - outputDir: Directory where recovered files will be written.
+    ///   - options: Scan options (coverage, file type filter).
     /// - Returns: An `AsyncStream<RecoveryEvent>` yielding progress and completion events.
     func start(
         device: StorageDevice,
-        outputDir: URL
+        outputDir: URL,
+        options: ScanOptions = ScanOptions()
     ) -> AsyncStream<RecoveryEvent> {
         AsyncStream { [weak self] continuation in
             guard let self else { return }
             Task {
-                await self.launch(device: device, outputDir: outputDir, continuation: continuation)
+                await self.launch(device: device, outputDir: outputDir, options: options, continuation: continuation)
             }
         }
     }
@@ -91,6 +103,7 @@ actor PhotoRecTask {
     private func launch(
         device: StorageDevice,
         outputDir: URL,
+        options: ScanOptions,
         continuation: AsyncStream<RecoveryEvent>.Continuation
     ) {
         self.continuation = continuation
@@ -129,7 +142,8 @@ actor PhotoRecTask {
             outDir:  outputDir.path,
             device:  device.id,
             logPath: lp,
-            sentinel: exitSentinel
+            sentinel: exitSentinel,
+            options: options
         )
         guard (try? expectScript.write(toFile: ep, atomically: true, encoding: .utf8)) != nil,
               FileManager.default.fileExists(atPath: ep) else {
@@ -230,23 +244,33 @@ actor PhotoRecTask {
         _ text: String,
         continuation: AsyncStream<RecoveryEvent>.Continuation
     ) {
-        // Strip sentinel lines from visible console output.
-        let visible = text.components(separatedBy: .newlines)
+        // Strip ANSI/VT100 sequences then filter sentinel lines, producing
+        // clean human-readable console output.
+        let clean = Self.stripANSI(text)
+        let visibleLines = clean.components(separatedBy: .newlines)
             .filter { !$0.hasPrefix(exitSentinel) }
-            .joined(separator: "\n")
+            .map    { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
 
-        if !visible.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            continuation.yield(.log(visible.hasSuffix("\n") ? visible : visible + "\n"))
+        // Deduplicate consecutive identical lines (PhotoRec redraws status in-place).
+        var deduped: [String] = []
+        for line in visibleLines {
+            if line != deduped.last { deduped.append(line) }
+        }
+
+        if !deduped.isEmpty {
+            continuation.yield(.log(deduped.joined(separator: "\n") + "\n"))
         }
 
         // Detect permission errors from any output line.
-        if text.localizedCaseInsensitiveContains("Permission denied") ||
-           text.localizedCaseInsensitiveContains("Operation not permitted") ||
-           text.localizedCaseInsensitiveContains("Unable to open") {
+        if clean.localizedCaseInsensitiveContains("Permission denied") ||
+           clean.localizedCaseInsensitiveContains("Operation not permitted") ||
+           clean.localizedCaseInsensitiveContains("Unable to open") {
             permissionDenied = true
         }
 
-        for line in text.components(separatedBy: .newlines) {
+        // Parse the ANSI-stripped text so "Pass 1 - Reading sector…" lines match.
+        for line in clean.components(separatedBy: .newlines) {
             PhotoRecLogParser.parseLine(line, into: &parseResult)
         }
 
@@ -260,7 +284,8 @@ actor PhotoRecTask {
                 ? Self.formatSpeed(sectors: parseResult.currentSector,
                                    seconds: parseResult.elapsedSeconds)
                 : "—",
-            percent: parseResult.fraction.map { $0 * 100 } ?? 0
+            percent: parseResult.fraction.map { $0 * 100 } ?? 0,
+            estimatedSeconds: parseResult.estimatedSeconds
         ))
     }
 
@@ -276,9 +301,11 @@ actor PhotoRecTask {
             continuation.yield(.cancelled)
         } else if permissionDenied {
             continuation.yield(.failed(error: .insufficientPermissions))
-        } else if exitCode == 0 || parseResult.isCompleted {
+        } else if exitCode == 0 || parseResult.isCompleted || parseResult.filesFound > 0 {
+            // Treat any run that recovered files as a success, even if exit code
+            // is non-zero (e.g. PhotoRec exits 1 after the session-save prompt).
             let total = parseResult.recoveredTypes.values.reduce(0, +)
-            continuation.yield(.completed(totalFiles: total, outputDir: outputDir))
+            continuation.yield(.completed(totalFiles: max(total, parseResult.filesFound), outputDir: outputDir))
         } else if exitCode == 15 {
             continuation.yield(.cancelled)
         } else {
@@ -317,20 +344,25 @@ actor PhotoRecTask {
     /// 2. Partition table type   — "Proceed" again (Intel selected) → Enter
     /// 3. Partition selection    — "Search" at bottom → Enter (first / only partition)
     /// 4. Filesystem type        — "ext2/ext3" default → Down arrow selects "Other" → Enter
-    /// 5. Output dir browser     — "recup_dir" in path → 'c' to confirm here
+    /// 5. Coverage choice        — "to be analysed" prompt → Enter (Free) or Down+Enter (Whole)
     /// 6. Recovery runs          — "files recovered" or eof marks completion
     private func makeExpectScript(
         binary: String,
         outDir: String,
         device: String,
         logPath: String,
-        sentinel: String
+        sentinel: String,
+        options: ScanOptions
     ) -> String {
         // Escape backslashes and double-quotes for embedding in a Tcl string literal.
         let q = { (s: String) -> String in
             s.replacingOccurrences(of: "\\", with: "\\\\")
              .replacingOccurrences(of: "\"", with: "\\\"")
         }
+        // Tcl fragment to send when the Free/Whole coverage screen appears.
+        let coverageSend = options.scanWholePartition
+            ? "send \"\\033\\[B\"\\nafter 200\\nsend \"\\r\""
+            : "send \"\\r\""
         return """
         #!/usr/bin/expect -f
         # Auto-generated by HeySOS — do not edit
@@ -363,6 +395,12 @@ actor PhotoRecTask {
                 send "\\r"
                 exp_continue
             }
+            "to be analysed" {
+                # Coverage screen: Free (unallocated only) or Whole (entire partition).
+                # The highlighted default is Free; send Down+Enter to choose Whole.
+                \(coverageSend)
+                exp_continue
+            }
             "recup_dir" {
                 # Output dir browser: current dir is recup_dir; press C to confirm
                 send "c"
@@ -375,8 +413,11 @@ actor PhotoRecTask {
                 send "n"
                 exp_continue
             }
-            "files recovered" {
-                # Scan finished — fall through to eof wait
+            "files saved in" {
+                # PhotoRec finished — the summary screen is showing.
+                # Send q to dismiss the [ Quit ] button and let photorec exit.
+                after 500
+                send "q"
             }
             eof { }
             timeout {
@@ -414,6 +455,34 @@ actor PhotoRecTask {
             }
         }
         return nil
+    }
+
+    /// Strip ANSI/VT100 escape sequences and bare carriage returns from `s`.
+    ///
+    /// Handles:
+    /// - CSI sequences: `ESC [ … final-byte` (cursor moves, colours, erase, etc.)
+    /// - OSC sequences: `ESC ] … (BEL | ST)`
+    /// - Other two-char ESC sequences: `ESC <single-char>`
+    /// - Bare `\r` left by ncurses full-screen redraws
+    private static func stripANSI(_ s: String) -> String {
+        // Build patterns once and cache them.
+        struct Patterns {
+            // CSI:  ESC [ (param/intermediate bytes 0x20–0x3F)* (final byte 0x40–0x7E)
+            static let csi  = try! NSRegularExpression(pattern: #"\x1B\[[\ -\x3F]*[\x40-\x7E]"#)
+            // OSC:  ESC ] … BEL  or  ESC ] … ESC \
+            static let osc  = try! NSRegularExpression(pattern: #"\x1B\][^\x07\x1B]*(?:\x07|\x1B\\\\)"#)
+            // Other ESC sequences (ESC + one non-[ non-] char)
+            static let esc  = try! NSRegularExpression(pattern: #"\x1B[^\[\]]"#)
+        }
+        var out = s
+        let full = { NSRange(out.startIndex..., in: out) }
+        out = Patterns.csi.stringByReplacingMatches(in: out, range: full(), withTemplate: "")
+        out = Patterns.osc.stringByReplacingMatches(in: out, range: full(), withTemplate: "")
+        out = Patterns.esc.stringByReplacingMatches(in: out, range: full(), withTemplate: "")
+        // Normalise carriage-returns from ncurses full-screen redraws.
+        out = out.replacingOccurrences(of: "\r\n", with: "\n")
+        out = out.replacingOccurrences(of: "\r",   with: "\n")
+        return out
     }
 
     private static func formatSpeed(sectors: Int64, seconds: Int) -> String {
